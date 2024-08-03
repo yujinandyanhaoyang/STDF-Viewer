@@ -1,0 +1,163 @@
+name: build
+
+on:
+  #push:
+  #  branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+     - '**.md'
+     - '**.png'
+     - 'deps/cystdf/**.*'
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  build-STDF-Viewer:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-11, windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+          architecture: x64
+
+      # setup rust env and build helper
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Rust-STDF-Helper
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          working-directory: ./deps/rust_stdf_helper
+          args: --release --out dist
+      
+      - name: Install Rust-STDF-Helper
+        working-directory: ./deps/rust_stdf_helper
+        run: |
+          pip install rust_stdf_helper --no-index --find-links dist --force-reinstall
+          python -c "import rust_stdf_helper"
+
+      - name: Get appdmg for dmg build
+        if: runner.os == 'macOS'
+        run: npm install -g appdmg
+          
+      # install numpy
+      - name: Install numpy vanilla
+        if: runner.os == 'Windows'
+        run: |
+          pip install .github/workflows/numpy-1.21.5+vanilla-cp39-cp39-win_amd64.whl
+
+      - name: Install Numpy-No-ACC-Pack
+        if: runner.os == 'macOS' || runner.os == 'Linux'
+        run: |
+          pip install cython
+          cd .github/workflows/
+          unzip "numpy-1.22.1.zip" -d .
+          for d in */
+          do
+          echo ""
+          done
+          cd "$d"
+          NPY_BLAS_ORDER= NPY_LAPACK_ORDER= python setup.py build
+          python setup.py install
+
+      # install other dependencies
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip3 install -U pyinstaller wheel pyinstaller-hooks-contrib
+        
+      - name: Freeze macOS app
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: |
+          pyinstaller build_tools/macos.spec
+
+      - name: Freeze Linux app
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          # qt issue on linux
+          export QT_DEBUG_PLUGINS=1
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libxcb-xinerama0 \
+            libxcb-image0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxkbcommon-x11-0 \
+            libxcb1 \
+            libxcb-randr0 \
+            libxcb-shape0
+          
+          xvfb-run pyinstaller build_tools/linux.spec
+
+      - name: Freeze Windows app
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: |
+          pyinstaller build_tools\\windows.spec
+
+      # - name: Clean dist folder
+      #   run: |
+      #     python build_tools/clean.py
+
+      # - name: Clean dist folder
+      #   run: |
+      #     rm -rf "./dist/STDF-Viewer"
+      #     python build_tools/clean.py
+
+      # macOS
+      - name: Build macOS dmg package
+        if: runner.os == 'macOS'
+        run: |
+          mv "dist/STDF Viewer.app" build_tools/STDF-Viewer-emptyDMG
+          ls -lahR build_tools/STDF-Viewer-emptyDMG
+
+          appdmg build_tools/STDF-Viewer-emptyDMG/dmg.json build_tools/STDF-Viewer-macos.dmg
+
+      - uses: actions/upload-artifact@v3
+        name: Upload macOS app
+        if: runner.os == 'macOS'
+        with:
+          name: STDF_Viewer_macos
+          path: build_tools/STDF-Viewer-macos.dmg
+
+      # Linux
+      - name: Build Linux deb
+        if: runner.os == 'Linux'
+        run: |
+          rm build_tools/STDF-Viewer-emptyDEB/usr/local/bin/placeholder
+          cp -avr dist/STDF-Viewer build_tools/STDF-Viewer-emptyDEB/usr/local/bin
+          ls -lahR build_tools/STDF-Viewer-emptyDEB
+          
+          dpkg-deb -vD --build build_tools/STDF-Viewer-emptyDEB
+      
+      - uses: actions/upload-artifact@v3
+        name: Upload Linux app
+        if: runner.os == 'Linux'
+        with:
+          name: STDF_Viewer_linux
+          path: build_tools/STDF-Viewer-emptyDEB.deb
+
+      # Windows
+      - name: Pack Windows app
+        if: runner.os == 'Windows'
+        run: |
+          ls -R dist
+          7z a -tzip STDF_Viewer_win.zip dist/
+
+      - uses: actions/upload-artifact@v3
+        name: Upload Windows app
+        if: runner.os == 'Windows'
+        with:
+          name: STDF_Viewer_win_64bit
+          path: STDF_Viewer_win.zip
+
